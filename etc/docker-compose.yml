@@ -11,10 +11,10 @@ services:
       - '8545:8545' # rpc
       - '8551:8551' # engine
     volumes:
-      - rethdata_mainnet:/root/.local/share/reth/mainnet/db
-      - rethdata_sepolia:/root/.local/share/reth/sepolia/db
-      - rethlogs:/root/rethlogs
-      - ./jwttoken:/root/jwt:ro
+      - /Volumes/reth-daddy/reth-node/rethdata_mainnet:/root/.local/share/reth/mainnet/db
+      - /Volumes/reth-daddy/reth-node/rethdata_sepolia:/root/.local/share/reth/sepolia/db
+      - /Volumes/reth-daddy/reth-node/rethlogs:/root/rethlogs
+      - /Volumes/reth-daddy/reth-node/reth/jwttoken:/root/jwt:ro
     # For Sepolia, replace `--chain mainnet` with `--chain sepolia`
     command: >
       node
@@ -26,6 +26,7 @@ services:
       --authrpc.jwtsecret /root/jwt/jwt.hex
       --http --http.addr 0.0.0.0 --http.port 8545
       --http.api "eth,net,web3"
+       -vvvvv
 
   prometheus:
     restart: unless-stopped
@@ -35,8 +36,8 @@ services:
     ports:
       - 9090:9090
     volumes:
-      - ./prometheus/:/etc/prometheus/
-      - prometheusdata:/prometheus
+      - /Volumes/reth-daddy/reth-node/reth/prometheus/:/etc/prometheus/
+      - /Volumes/reth-daddy/reth-node/prometheusdata:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -52,25 +53,13 @@ services:
     environment:
       PROMETHEUS_URL: http://prometheus:9090
     volumes:
-      - grafanadata:/var/lib/grafana
-      - ./grafana/datasources:/etc/grafana/provisioning/datasources
-      - ./grafana/dashboards:/etc/grafana/provisioning_temp/dashboards
+      - /Volumes/reth-daddy/reth-node/grafanadata:/var/lib/grafana
+      - /Volumes/reth-daddy/reth-node/reth/grafana/datasources:/etc/grafana/provisioning/datasources
+      - /Volumes/reth-daddy/reth-node/reth/grafana/dashboards:/etc/grafana/provisioning_temp/dashboards
     # 1. Copy dashboards from temp directory to prevent modifying original host files
     # 2. Replace Prometheus datasource placeholder with the actual name
     # 3. Run Grafana
     entrypoint: >
       sh -c "cp -r /etc/grafana/provisioning_temp/dashboards/. /etc/grafana/provisioning/dashboards &&
-             find /etc/grafana/provisioning/dashboards/ -name '*.json' -exec sed -i 's/$${DS_PROMETHEUS}/Prometheus/g' {} \+ &&
+             find /etc/grafana/provisioning/dashboards/ -name '*.json' -exec sed -i 's/$${DS_PROMETHEUS}/Prometheus/g' {} \\+ &&
              /run.sh"
-    
-volumes:
-  rethdata_mainnet:
-    driver: local
-  rethdata_sepolia:
-    driver: local
-  rethlogs:
-    driver: local
-  prometheusdata:
-    driver: local
-  grafanadata:
-    driver: local

@@ -14,8 +14,8 @@ services:
       - '9000:9000/tcp' # p2p
       - '9000:9000/udp' # p2p
     volumes:
-      - lighthousedata:/root/.lighthouse
-      - ./jwttoken:/root/jwt:ro
+      - /Volumes/reth-daddy/reth-node/lighthousedata:/root/.lighthouse
+      - /Volumes/reth-daddy/reth-node/reth/jwttoken:/root/jwt:ro
     # For Sepolia:
     # - Replace `--network mainnet` with `--network sepolia`
     # - Use different checkpoint sync URL: `--checkpoint-sync-url https://sepolia.checkpoint-sync.ethpandaops.io`
@@ -37,11 +37,7 @@ services:
     ports:
       - 9091:9091 # metrics
     volumes:
-      - ./ethereum-metrics-exporter/config.yaml:/root/config.yaml
+      - /Volumes/reth-daddy/reth-node/reth/ethereum-metrics-exporter/config.yaml:/root/config.yaml
     command:
       - --config=/root/config.yaml
       - --metrics-port=9091
-
-volumes:
-  lighthousedata:
-    driver: local
