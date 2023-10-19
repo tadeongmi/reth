@@ -1,12 +1,13 @@
 //! Implementation specific Errors for the `eth_` namespace.
 
 use crate::result::{internal_rpc_err, invalid_params_rpc_err, rpc_err, rpc_error_with_code};
+use alloy_sol_types::decode_revert_reason;
 use jsonrpsee::{
     core::Error as RpcError,
     types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObject},
 };
 use reth_interfaces::RethError;
-use reth_primitives::{abi::decode_revert_reason, Address, Bytes, U256};
+use reth_primitives::{Address, Bytes, U256};
 use reth_revm::tracing::js::JsInspectorError;
 use reth_rpc_types::{error::EthRpcErrorCode, BlockError, CallInputError};
 use reth_transaction_pool::error::{
@@ -82,12 +83,12 @@ pub enum EthApiError {
     /// Percentile array is invalid
     #[error("invalid reward percentiles")]
     InvalidRewardPercentiles,
-    /// Error thrown when a spawned tracing task failed to deliver an anticipated response.
+    /// Error thrown when a spawned blocking task failed to deliver an anticipated response.
     ///
-    /// This only happens if the tracing task panics and is aborted before it can return a response
-    /// back to the request handler.
-    #[error("internal error while tracing")]
-    InternalTracingError,
+    /// This only happens if the blocking task panics and is aborted before it can return a
+    /// response back to the request handler.
+    #[error("internal blocking task error")]
+    InternalBlockingTaskError,
     /// Error thrown when a spawned blocking task failed to deliver an anticipated response.
     #[error("internal eth error")]
     InternalEthError,
@@ -132,7 +133,7 @@ impl From<EthApiError> for ErrorObject<'static> {
             err @ EthApiError::ExecutionTimedOut(_) => {
                 rpc_error_with_code(CALL_EXECUTION_FAILED_CODE, err.to_string())
             }
-            err @ EthApiError::InternalTracingError => internal_rpc_err(err.to_string()),
+            err @ EthApiError::InternalBlockingTaskError => internal_rpc_err(err.to_string()),
             err @ EthApiError::InternalEthError => internal_rpc_err(err.to_string()),
             err @ EthApiError::CallInputError(_) => invalid_params_rpc_err(err.to_string()),
         }
@@ -467,7 +468,7 @@ pub struct RevertError {
     /// The transaction output data
     ///
     /// Note: this is `None` if output was empty
-    output: Option<bytes::Bytes>,
+    output: Option<Bytes>,
 }
 
 // === impl RevertError ==
@@ -476,7 +477,7 @@ impl RevertError {
     /// Wraps the output bytes
     ///
     /// Note: this is intended to wrap an revm output
-    pub fn new(output: bytes::Bytes) -> Self {
+    pub fn new(output: Bytes) -> Self {
         if output.is_empty() {
             Self { output: None }
         } else {
@@ -492,7 +493,7 @@ impl RevertError {
 impl std::fmt::Display for RevertError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("execution reverted")?;
-        if let Some(reason) = self.output.as_ref().and_then(decode_revert_reason) {
+        if let Some(reason) = self.output.as_ref().and_then(|bytes| decode_revert_reason(bytes)) {
             write!(f, ": {reason}")?;
         }
         Ok(())
@@ -575,6 +576,9 @@ impl From<InvalidPoolTransactionError> for RpcPoolError {
             InvalidPoolTransactionError::ExceedsMaxInitCodeSize(_, _) => {
                 RpcPoolError::ExceedsMaxInitCodeSize
             }
+            InvalidPoolTransactionError::IntrinsicGasTooLow => {
+                RpcPoolError::Invalid(RpcInvalidTransactionError::GasTooLow)
+            }
             InvalidPoolTransactionError::OversizedData(_, _) => RpcPoolError::OversizedData,
             InvalidPoolTransactionError::Underpriced => RpcPoolError::Underpriced,
             InvalidPoolTransactionError::Other(err) => RpcPoolError::PoolTransactionError(err),
@@ -616,7 +620,7 @@ pub enum SignError {
 /// [ExecutionResult::Success].
 pub(crate) fn ensure_success(result: ExecutionResult) -> EthResult<Bytes> {
     match result {
-        ExecutionResult::Success { output, .. } => Ok(output.into_data().into()),
+        ExecutionResult::Success { output, .. } => Ok(output.into_data()),
         ExecutionResult::Revert { output, .. } => {
             Err(RpcInvalidTransactionError::Revert(RevertError::new(output)).into())
         }

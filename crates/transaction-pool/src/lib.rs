@@ -138,7 +138,7 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
-    issue_tracker_base_url = "https://github.com/paradigmxzy/reth/issues/"
+    issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
 #![warn(missing_debug_implementations, missing_docs, unreachable_pub, rustdoc::all)]
 #![deny(unused_must_use, rust_2018_idioms)]
@@ -148,10 +148,7 @@ use crate::pool::PoolInner;
 use aquamarine as _;
 use reth_primitives::{Address, BlobTransactionSidecar, PooledTransactionsElement, TxHash, U256};
 use reth_provider::StateProviderFactory;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 use tokio::sync::mpsc::Receiver;
 use tracing::{instrument, trace};
 
@@ -168,13 +165,7 @@ pub use crate::{
         state::SubPool, AllTransactionsEvents, FullTransactionEvent, TransactionEvent,
         TransactionEvents,
     },
-    traits::{
-        AllPoolTransactions, BestTransactions, BlockInfo, CanonicalStateUpdate, ChangedAccount,
-        EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction,
-        GetPooledTransactionLimit, NewBlobSidecar, NewTransactionEvent, PoolSize, PoolTransaction,
-        PropagateKind, PropagatedTransactions, TransactionListenerKind, TransactionOrigin,
-        TransactionPool, TransactionPoolExt,
-    },
+    traits::*,
     validate::{
         EthTransactionValidator, TransactionValidationOutcome, TransactionValidationTaskExecutor,
         TransactionValidator, ValidPoolTransaction,
@@ -197,6 +188,13 @@ mod traits;
 #[cfg(any(test, feature = "test-utils"))]
 /// Common test helpers for mocking a pool
 pub mod test_utils;
+
+/// Type alias for default ethereum transaction pool
+pub type EthTransactionPool<Client, S> = Pool<
+    TransactionValidationTaskExecutor<EthTransactionValidator<Client, EthPooledTransaction>>,
+    CoinbaseTipOrdering<EthPooledTransaction>,
+    S,
+>;
 
 /// A shareable, generic, customizable `TransactionPool` implementation.
 #[derive(Debug)]
@@ -229,19 +227,21 @@ where
     }
 
     /// Returns future that validates all transaction in the given iterator.
+    ///
+    /// This returns the validated transactions in the iterator's order.
     async fn validate_all(
         &self,
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = V::Transaction>,
-    ) -> PoolResult<HashMap<TxHash, TransactionValidationOutcome<V::Transaction>>> {
-        let outcome = futures_util::future::join_all(
+    ) -> PoolResult<Vec<(TxHash, TransactionValidationOutcome<V::Transaction>)>> {
+        let outcomes = futures_util::future::join_all(
             transactions.into_iter().map(|tx| self.validate(origin, tx)),
         )
         .await
         .into_iter()
-        .collect::<HashMap<_, _>>();
+        .collect();
 
-        Ok(outcome)
+        Ok(outcomes)
     }
 
     /// Validates the given transaction
@@ -268,12 +268,7 @@ where
     }
 }
 
-impl<Client, S>
-    Pool<
-        TransactionValidationTaskExecutor<EthTransactionValidator<Client, EthPooledTransaction>>,
-        CoinbaseTipOrdering<EthPooledTransaction>,
-        S,
-    >
+impl<Client, S> EthTransactionPool<Client, S>
 where
     Client: StateProviderFactory + Clone + 'static,
     S: BlobStore,
@@ -352,7 +347,8 @@ where
     ) -> PoolResult<Vec<PoolResult<TxHash>>> {
         let validated = self.validate_all(origin, transactions).await?;
 
-        let transactions = self.pool.add_transactions(origin, validated.into_values());
+        let transactions =
+            self.pool.add_transactions(origin, validated.into_iter().map(|(_, tx)| tx));
         Ok(transactions)
     }
 
@@ -417,6 +413,13 @@ where
         base_fee: u64,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
         self.pool.best_transactions_with_base_fee(base_fee)
+    }
+
+    fn best_transactions_with_attributes(
+        &self,
+        best_transactions_attributes: BestTransactionsAttributes,
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
+        self.pool.best_transactions_with_attributes(best_transactions_attributes)
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {

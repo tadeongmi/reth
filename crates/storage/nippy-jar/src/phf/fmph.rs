@@ -1,10 +1,9 @@
-use crate::{NippyJarError, PerfectHashingFunction};
+use crate::{NippyJarError, PHFKey, PerfectHashingFunction};
 use ph::fmph::{BuildConf, Function};
 use serde::{
     de::Error as DeSerdeError, ser::Error as SerdeError, Deserialize, Deserializer, Serialize,
     Serializer,
 };
-use std::{clone::Clone, hash::Hash, marker::Sync};
 
 /// Wrapper struct for [`Function`]. Implementation of the following [paper](https://dl.acm.org/doi/10.1145/3596453).
 #[derive(Default)]
@@ -19,10 +18,7 @@ impl Fmph {
 }
 
 impl PerfectHashingFunction for Fmph {
-    fn set_keys<T: AsRef<[u8]> + Sync + Clone + Hash>(
-        &mut self,
-        keys: &[T],
-    ) -> Result<(), NippyJarError> {
+    fn set_keys<T: PHFKey>(&mut self, keys: &[T]) -> Result<(), NippyJarError> {
         self.function = Some(Function::from_slice_with_conf(
             keys,
             BuildConf { use_multiple_threads: true, ..Default::default() },
@@ -64,7 +60,6 @@ impl PartialEq for Fmph {
 impl std::fmt::Debug for Fmph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Fmph")
-            .field("level_sizes", &self.function.as_ref().map(|f| f.level_sizes()))
             .field("bytes_size", &self.function.as_ref().map(|f| f.write_bytes()))
             .finish_non_exhaustive()
     }

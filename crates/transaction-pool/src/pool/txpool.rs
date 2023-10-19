@@ -13,7 +13,7 @@ use crate::{
         update::{Destination, PoolUpdate},
         AddedPendingTransaction, AddedTransaction, OnNewCanonicalStateOutcome,
     },
-    traits::{BlockInfo, PoolSize},
+    traits::{BestTransactionsAttributes, BlockInfo, PoolSize},
     PoolConfig, PoolResult, PoolTransaction, PriceBumpConfig, TransactionOrdering,
     ValidPoolTransaction, U256,
 };
@@ -22,7 +22,7 @@ use reth_primitives::{
     constants::{
         eip4844::BLOB_TX_MIN_BLOB_GASPRICE, ETHEREUM_BLOCK_GAS_LIMIT, MIN_PROTOCOL_BASE_FEE,
     },
-    Address, TxHash, H256,
+    Address, TxHash, B256,
 };
 use std::{
     cmp::Ordering,
@@ -88,7 +88,6 @@ pub struct TxPool<T: TransactionOrdering> {
     /// be moved to pending if the base fee changes in their favor (decreases) in future blocks.
     basefee_pool: ParkedPool<BasefeeOrd<T::Transaction>>,
     /// All blob transactions in the pool
-    #[allow(unused)]
     blob_transactions: BlobTransactions<T::Transaction>,
     /// All transactions in the pool.
     all_transactions: AllTransactions<T::Transaction>,
@@ -147,7 +146,8 @@ impl<T: TransactionOrdering> TxPool<T> {
     }
 
     /// Updates the tracked blob fee
-    fn update_blob_fee(&mut self, _pending_blob_fee: u64) {
+    fn update_blob_fee(&mut self, _pending_blob_fee: u128) {
+        // TODO: std::mem::swap pending_blob_fee
         // TODO(mattsse): update blob txs
     }
 
@@ -155,14 +155,16 @@ impl<T: TransactionOrdering> TxPool<T> {
     ///
     /// Depending on the change in direction of the basefee, this will promote or demote
     /// transactions from the basefee pool.
-    fn update_basefee(&mut self, pending_basefee: u64) {
-        match pending_basefee.cmp(&self.all_transactions.pending_basefee) {
+    fn update_basefee(&mut self, mut pending_basefee: u64) {
+        std::mem::swap(&mut self.all_transactions.pending_basefee, &mut pending_basefee);
+        match self.all_transactions.pending_basefee.cmp(&pending_basefee) {
             Ordering::Equal => {
                 // fee unchanged, nothing to update
             }
             Ordering::Greater => {
                 // increased base fee: recheck pending pool and remove all that are no longer valid
-                let removed = self.pending_pool.update_base_fee(pending_basefee);
+                let removed =
+                    self.pending_pool.update_base_fee(self.all_transactions.pending_basefee);
                 for tx in removed {
                     let to = {
                         let tx =
@@ -176,7 +178,8 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
             Ordering::Less => {
                 // decreased base fee: recheck basefee pool and promote all that are now valid
-                let removed = self.basefee_pool.enforce_basefee(pending_basefee);
+                let removed =
+                    self.basefee_pool.enforce_basefee(self.all_transactions.pending_basefee);
                 for tx in removed {
                     let to = {
                         let tx =
@@ -203,12 +206,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         } = info;
         self.all_transactions.last_seen_block_hash = last_seen_block_hash;
         self.all_transactions.last_seen_block_number = last_seen_block_number;
-        self.all_transactions.pending_basefee = pending_basefee;
         self.update_basefee(pending_basefee);
 
         if let Some(blob_fee) = pending_blob_fee {
-            self.all_transactions.pending_blob_fee = blob_fee;
-            self.update_blob_fee(pending_basefee)
+            self.update_blob_fee(blob_fee)
         }
     }
 
@@ -245,6 +246,38 @@ impl<T: TransactionOrdering> TxPool<T> {
         }
     }
 
+    /// Returns an iterator that yields transactions that are ready to be included in the block with
+    /// the given base fee and optional blob fee.
+    pub(crate) fn best_transactions_with_attributes(
+        &self,
+        best_transactions_attributes: BestTransactionsAttributes,
+    ) -> Box<dyn crate::traits::BestTransactions<Item = Arc<ValidPoolTransaction<T::Transaction>>>>
+    {
+        match best_transactions_attributes.basefee.cmp(&self.all_transactions.pending_basefee) {
+            Ordering::Equal => {
+                // fee unchanged, nothing to shift
+                Box::new(self.best_transactions())
+            }
+            Ordering::Greater => {
+                // base fee increased, we only need to enforce this on the pending pool
+                Box::new(self.pending_pool.best_with_basefee(best_transactions_attributes.basefee))
+            }
+            Ordering::Less => {
+                // base fee decreased, we need to move transactions from the basefee pool to the
+                // pending pool and satisfy blob fee transactions as well
+                let unlocked_with_blob =
+                    self.blob_transactions.satisfy_attributes(best_transactions_attributes);
+
+                Box::new(
+                    self.pending_pool.best_with_unlocked(
+                        unlocked_with_blob,
+                        self.all_transactions.pending_basefee,
+                    ),
+                )
+            }
+        }
+    }
+
     /// Returns all transactions from the pending sub-pool
     pub(crate) fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         self.pending_pool.all().collect()
@@ -269,6 +302,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             SubPool::Queued => self.queued_pool.contains(id),
             SubPool::Pending => self.pending_pool.contains(id),
             SubPool::BaseFee => self.basefee_pool.contains(id),
+            SubPool::Blob => self.blob_transactions.contains(id),
         }
     }
 
@@ -530,7 +564,7 @@ impl<T: TransactionOrdering> TxPool<T> {
     /// This includes the total set of transactions and the subpool it currently resides in.
     fn remove_transaction_by_hash(
         &mut self,
-        tx_hash: &H256,
+        tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<T::Transaction>>> {
         let (tx, pool) = self.all_transactions.remove_transaction_by_hash(tx_hash)?;
         self.remove_from_subpool(pool, tx.id())
@@ -543,7 +577,7 @@ impl<T: TransactionOrdering> TxPool<T> {
     /// [Self::on_canonical_state_change]
     fn prune_transaction_by_hash(
         &mut self,
-        tx_hash: &H256,
+        tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<T::Transaction>>> {
         let (tx, pool) = self.all_transactions.remove_transaction_by_hash(tx_hash)?;
         self.prune_from_subpool(pool, tx.id())
@@ -561,6 +595,7 @@ impl<T: TransactionOrdering> TxPool<T> {
             SubPool::Queued => self.queued_pool.remove_transaction(tx),
             SubPool::Pending => self.pending_pool.remove_transaction(tx),
             SubPool::BaseFee => self.basefee_pool.remove_transaction(tx),
+            SubPool::Blob => self.blob_transactions.remove_transaction(tx),
         }
     }
 
@@ -572,9 +607,10 @@ impl<T: TransactionOrdering> TxPool<T> {
         tx: &TransactionId,
     ) -> Option<Arc<ValidPoolTransaction<T::Transaction>>> {
         match pool {
-            SubPool::Queued => self.queued_pool.remove_transaction(tx),
             SubPool::Pending => self.pending_pool.prune_transaction(tx),
+            SubPool::Queued => self.queued_pool.remove_transaction(tx),
             SubPool::BaseFee => self.basefee_pool.remove_transaction(tx),
+            SubPool::Blob => self.blob_transactions.remove_transaction(tx),
         }
     }
 
@@ -618,6 +654,9 @@ impl<T: TransactionOrdering> TxPool<T> {
             }
             SubPool::BaseFee => {
                 self.basefee_pool.add_transaction(tx);
+            }
+            SubPool::Blob => {
+                self.blob_transactions.add_transaction(tx);
             }
         }
     }
@@ -774,11 +813,11 @@ pub(crate) struct AllTransactions<T: PoolTransaction> {
     /// The current block number the pool keeps track of.
     last_seen_block_number: u64,
     /// The current block hash the pool keeps track of.
-    last_seen_block_hash: H256,
+    last_seen_block_hash: B256,
     /// Expected base fee for the pending block.
     pending_basefee: u64,
     /// Expected blob fee for the pending block.
-    pending_blob_fee: u64,
+    pending_blob_fee: u128,
     /// Configured price bump settings for replacements
     price_bumps: PriceBumpConfig,
 }
@@ -1084,7 +1123,7 @@ impl<T: PoolTransaction> AllTransactions<T> {
     /// Removes a transaction from the set using its hash.
     pub(crate) fn remove_transaction_by_hash(
         &mut self,
-        tx_hash: &H256,
+        tx_hash: &B256,
     ) -> Option<(Arc<ValidPoolTransaction<T>>, SubPool)> {
         let tx = self.by_hash.remove(tx_hash)?;
         let internal = self.txs.remove(&tx.transaction_id)?;
@@ -1324,10 +1363,12 @@ impl<T: PoolTransaction> AllTransactions<T> {
         // before attempting to insert a blob transaction, we need to ensure that additional
         // constraints are met that only apply to blob transactions
         if transaction.is_eip4844() {
+            state.insert(TxState::BLOB_TRANSACTION);
+
             transaction =
                 self.ensure_valid_blob_transaction(transaction, on_chain_balance, ancestor)?;
             let blob_fee_cap = transaction.transaction.max_fee_per_blob_gas().unwrap_or_default();
-            if blob_fee_cap >= self.pending_blob_fee as u128 {
+            if blob_fee_cap >= self.pending_blob_fee {
                 state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
             }
         } else {
@@ -2067,6 +2108,29 @@ mod tests {
         assert_eq!(pool.pending_pool.len(), 1);
 
         pool.update_basefee((tx.max_fee_per_gas() + 1) as u64);
+
+        assert!(pool.pending_pool.is_empty());
+        assert_eq!(pool.basefee_pool.len(), 1);
+
+        assert_eq!(pool.all_transactions.txs.get(&id).unwrap().subpool, SubPool::BaseFee)
+    }
+
+    #[test]
+    fn update_basefee_subpools_setting_block_info() {
+        let mut f = MockTransactionFactory::default();
+        let mut pool = TxPool::new(MockOrdering::default(), Default::default());
+
+        let tx = MockTransaction::eip1559().inc_price_by(10);
+        let validated = f.validated(tx.clone());
+        let id = *validated.id();
+        pool.add_transaction(validated, U256::from(1_000), 0).unwrap();
+
+        assert_eq!(pool.pending_pool.len(), 1);
+
+        // use set_block_info for the basefee update
+        let mut block_info = pool.block_info();
+        block_info.pending_basefee = (tx.max_fee_per_gas() + 1) as u64;
+        pool.set_block_info(block_info);
 
         assert!(pool.pending_pool.is_empty());
         assert_eq!(pool.basefee_pool.len(), 1);

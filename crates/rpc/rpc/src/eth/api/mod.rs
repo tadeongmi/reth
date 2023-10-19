@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use reth_interfaces::RethResult;
 use reth_network_api::NetworkInfo;
 use reth_primitives::{
-    Address, BlockId, BlockNumberOrTag, ChainInfo, SealedBlock, H256, U256, U64,
+    Address, BlockId, BlockNumberOrTag, ChainInfo, SealedBlock, B256, U256, U64,
 };
 use reth_provider::{
     BlockReaderIdExt, ChainSpecProvider, EvmEnvProvider, StateProviderBox, StateProviderFactory,
@@ -39,7 +39,7 @@ mod sign;
 mod state;
 mod transactions;
 
-use crate::TracingCallPool;
+use crate::BlockingTaskPool;
 pub use transactions::{EthTransactions, TransactionSource};
 
 /// `Eth` API trait.
@@ -91,7 +91,7 @@ where
         eth_cache: EthStateCache,
         gas_oracle: GasPriceOracle<Provider>,
         gas_cap: impl Into<GasCap>,
-        tracing_call_pool: TracingCallPool,
+        blocking_task_pool: BlockingTaskPool,
     ) -> Self {
         Self::with_spawner(
             provider,
@@ -101,7 +101,7 @@ where
             gas_oracle,
             gas_cap.into().into(),
             Box::<TokioTaskExecutor>::default(),
-            tracing_call_pool,
+            blocking_task_pool,
         )
     }
 
@@ -115,7 +115,7 @@ where
         gas_oracle: GasPriceOracle<Provider>,
         gas_cap: u64,
         task_spawner: Box<dyn TaskSpawner>,
-        tracing_call_pool: TracingCallPool,
+        blocking_task_pool: BlockingTaskPool,
     ) -> Self {
         // get the block number of the latest block
         let latest_block = provider
@@ -136,7 +136,7 @@ where
             starting_block: U256::from(latest_block),
             task_spawner,
             pending_block: Default::default(),
-            tracing_call_pool,
+            blocking_task_pool,
         };
         Self { inner: Arc::new(inner) }
     }
@@ -221,7 +221,7 @@ where
     }
 
     /// Returns the state at the given block number
-    pub fn state_at_hash(&self, block_hash: H256) -> RethResult<StateProviderBox<'_>> {
+    pub fn state_at_hash(&self, block_hash: B256) -> RethResult<StateProviderBox<'_>> {
         self.provider().history_by_block_hash(block_hash)
     }
 
@@ -263,8 +263,9 @@ where
 
         let mut cfg = CfgEnv::default();
         let mut block_env = BlockEnv::default();
-        self.provider().fill_block_env_with_header(&mut block_env, origin.header())?;
-        self.provider().fill_cfg_env_with_header(&mut cfg, origin.header())?;
+        // Note: for the PENDING block we assume it is past the known merge block and thus this will
+        // not fail when looking up the total difficulty value for the blockenv.
+        self.provider().fill_env_with_header(&mut cfg, &mut block_env, origin.header())?;
 
         Ok(PendingBlockEnv { cfg, block_env, origin })
     }
@@ -435,6 +436,6 @@ struct EthApiInner<Provider, Pool, Network> {
     task_spawner: Box<dyn TaskSpawner>,
     /// Cached pending block if any
     pending_block: Mutex<Option<PendingBlock>>,
-    /// A pool dedicated to tracing calls
-    tracing_call_pool: TracingCallPool,
+    /// A pool dedicated to blocking tasks.
+    blocking_task_pool: BlockingTaskPool,
 }

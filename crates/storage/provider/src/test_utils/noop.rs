@@ -10,12 +10,13 @@ use reth_db::models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_interfaces::RethResult;
 use reth_primitives::{
     stage::{StageCheckpoint, StageId},
-    Account, Address, Block, BlockHash, BlockHashOrNumber, BlockId, BlockNumber, Bytecode, Bytes,
-    ChainInfo, ChainSpec, Header, PruneCheckpoint, PrunePart, Receipt, SealedBlock, SealedHeader,
-    StorageKey, StorageValue, TransactionMeta, TransactionSigned, TransactionSignedNoHash, TxHash,
-    TxNumber, H256, KECCAK_EMPTY, MAINNET, U256,
+    trie::AccountProof,
+    Account, Address, Block, BlockHash, BlockHashOrNumber, BlockId, BlockNumber, Bytecode,
+    ChainInfo, ChainSpec, Header, PruneCheckpoint, PruneSegment, Receipt, SealedBlock,
+    SealedHeader, StorageKey, StorageValue, TransactionMeta, TransactionSigned,
+    TransactionSignedNoHash, TxHash, TxNumber, B256, MAINNET, U256,
 };
-use reth_revm_primitives::primitives::{BlockEnv, CfgEnv};
+use revm::primitives::{BlockEnv, CfgEnv};
 use std::{
     ops::{RangeBounds, RangeInclusive},
     sync::Arc,
@@ -34,7 +35,7 @@ impl ChainSpecProvider for NoopProvider {
 
 /// Noop implementation for testing purposes
 impl BlockHashReader for NoopProvider {
-    fn block_hash(&self, _number: u64) -> RethResult<Option<H256>> {
+    fn block_hash(&self, _number: u64) -> RethResult<Option<B256>> {
         Ok(None)
     }
 
@@ -42,7 +43,7 @@ impl BlockHashReader for NoopProvider {
         &self,
         _start: BlockNumber,
         _end: BlockNumber,
-    ) -> RethResult<Vec<H256>> {
+    ) -> RethResult<Vec<B256>> {
         Ok(vec![])
     }
 }
@@ -60,13 +61,13 @@ impl BlockNumReader for NoopProvider {
         Ok(0)
     }
 
-    fn block_number(&self, _hash: H256) -> RethResult<Option<BlockNumber>> {
+    fn block_number(&self, _hash: B256) -> RethResult<Option<BlockNumber>> {
         Ok(None)
     }
 }
 
 impl BlockReader for NoopProvider {
-    fn find_block_by_hash(&self, hash: H256, _source: BlockSource) -> RethResult<Option<Block>> {
+    fn find_block_by_hash(&self, hash: B256, _source: BlockSource) -> RethResult<Option<Block>> {
         self.block(hash.into())
     }
 
@@ -260,7 +261,7 @@ impl ChangeSetReader for NoopProvider {
 }
 
 impl StateRootProvider for NoopProvider {
-    fn state_root(&self, _state: &BundleStateWithReceipts) -> RethResult<H256> {
+    fn state_root(&self, _state: &BundleStateWithReceipts) -> RethResult<B256> {
         todo!()
     }
 }
@@ -274,16 +275,12 @@ impl StateProvider for NoopProvider {
         Ok(None)
     }
 
-    fn bytecode_by_hash(&self, _code_hash: H256) -> RethResult<Option<Bytecode>> {
+    fn bytecode_by_hash(&self, _code_hash: B256) -> RethResult<Option<Bytecode>> {
         Ok(None)
     }
 
-    fn proof(
-        &self,
-        _address: Address,
-        _keys: &[H256],
-    ) -> RethResult<(Vec<Bytes>, H256, Vec<Vec<Bytes>>)> {
-        Ok((vec![], KECCAK_EMPTY, vec![]))
+    fn proof(&self, _address: Address, _keys: &[B256]) -> RethResult<AccountProof> {
+        Ok(AccountProof::default())
     }
 }
 
@@ -352,7 +349,7 @@ impl StateProviderFactory for NoopProvider {
         Ok(Box::new(*self))
     }
 
-    fn pending_state_by_hash(&self, _block_hash: H256) -> RethResult<Option<StateProviderBox<'_>>> {
+    fn pending_state_by_hash(&self, _block_hash: B256) -> RethResult<Option<StateProviderBox<'_>>> {
         Ok(Some(Box::new(*self)))
     }
 
@@ -388,7 +385,7 @@ impl WithdrawalsProvider for NoopProvider {
 }
 
 impl PruneCheckpointReader for NoopProvider {
-    fn get_prune_checkpoint(&self, _part: PrunePart) -> RethResult<Option<PruneCheckpoint>> {
+    fn get_prune_checkpoint(&self, _segment: PruneSegment) -> RethResult<Option<PruneCheckpoint>> {
         Ok(None)
     }
 }
