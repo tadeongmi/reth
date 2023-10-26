@@ -2,9 +2,9 @@
 
 use crate::eth::error::{EthApiError, EthResult, RpcInvalidTransactionError};
 use reth_primitives::{
+    revm::env::{fill_tx_env, fill_tx_env_with_recovered},
     AccessList, Address, TransactionSigned, TransactionSignedEcRecovered, TxHash, B256, U256,
 };
-use reth_revm::env::{fill_tx_env, fill_tx_env_with_recovered};
 use reth_rpc_types::{
     state::{AccountOverride, StateOverride},
     BlockOverrides, CallRequest,
@@ -522,8 +522,8 @@ where
     EthApiError: From<<DB as DatabaseRef>::Error>,
 {
     // we need to fetch the account via the `DatabaseRef` to not update the state of the account,
-    // which is modified via `Database::basic`
-    let mut account_info = DatabaseRef::basic(db, account)?.unwrap_or_default();
+    // which is modified via `Database::basic_ref`
+    let mut account_info = DatabaseRef::basic_ref(db, account)?.unwrap_or_default();
 
     if let Some(nonce) = account_override.nonce {
         account_info.nonce = nonce.to();

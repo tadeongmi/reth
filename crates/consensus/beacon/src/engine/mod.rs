@@ -22,8 +22,8 @@ use reth_interfaces::{
 };
 use reth_payload_builder::{PayloadBuilderAttributes, PayloadBuilderHandle};
 use reth_primitives::{
-    constants::EPOCH_SLOTS, listener::EventListeners, stage::StageId, BlockNumHash, BlockNumber,
-    ChainSpec, Head, Header, SealedBlock, SealedHeader, B256, U256,
+    constants::EPOCH_SLOTS, stage::StageId, BlockNumHash, BlockNumber, ChainSpec, Head, Header,
+    SealedBlock, SealedHeader, B256, U256,
 };
 use reth_provider::{
     BlockIdReader, BlockReader, BlockSource, CanonChainTracker, ChainSpecProvider, ProviderError,
@@ -36,6 +36,7 @@ use reth_rpc_types::engine::{
 use reth_rpc_types_compat::engine::payload::{try_into_block, validate_block_hash};
 use reth_stages::{ControlFlow, Pipeline, PipelineError};
 use reth_tasks::TaskSpawner;
+use reth_tokio_util::EventListeners;
 use std::{
     pin::Pin,
     sync::Arc,
@@ -346,7 +347,7 @@ where
             // If the checkpoint of any stage is less than the checkpoint of the first stage,
             // retrieve and return the block hash of the latest header and use it as the target.
             if stage_checkpoint < first_stage_checkpoint {
-                warn!(
+                debug!(
                     target: "consensus::engine",
                     first_stage_checkpoint,
                     inconsistent_stage_id = %stage_id,
@@ -867,7 +868,7 @@ where
         head_block.total_difficulty =
             self.blockchain.header_td_by_number(head_block.number)?.ok_or_else(|| {
                 RethError::Provider(ProviderError::TotalDifficultyNotFound {
-                    number: head_block.number,
+                    block_number: head_block.number,
                 })
             })?;
         self.sync_state_updater.update_status(head_block);

@@ -14,12 +14,12 @@ use alloy_rlp::{Decodable, Encodable};
 use async_trait::async_trait;
 use jsonrpsee::core::RpcResult;
 use reth_primitives::{
-    Account, Address, Block, BlockId, BlockNumberOrTag, Bytes, TransactionSigned, B256,
+    revm::env::tx_env_with_recovered, Account, Address, Block, BlockId, BlockNumberOrTag, Bytes,
+    TransactionSigned, B256,
 };
 use reth_provider::{BlockReaderIdExt, HeaderProvider, StateProviderBox};
 use reth_revm::{
     database::{StateProviderDatabase, SubState},
-    env::tx_env_with_recovered,
     tracing::{
         js::{JsDbRequest, JsInspector},
         FourByteInspector, TracingInspector, TracingInspectorConfig,
@@ -263,7 +263,10 @@ where
                             .into_pre_state_config()
                             .map_err(|_| EthApiError::InvalidTracerConfig)?;
                         let mut inspector = TracingInspector::new(
-                            TracingInspectorConfig::from_geth_config(&config),
+                            TracingInspectorConfig::from_geth_config(&config)
+                                // if in default mode, we need to return all touched storages, for
+                                // which we need to record steps and statediff
+                                .set_steps_and_state_diffs(prestate_config.is_default_mode()),
                         );
 
                         let frame =
@@ -490,7 +493,10 @@ where
                             .map_err(|_| EthApiError::InvalidTracerConfig)?;
 
                         let mut inspector = TracingInspector::new(
-                            TracingInspectorConfig::from_geth_config(&config),
+                            TracingInspectorConfig::from_geth_config(&config)
+                                // if in default mode, we need to return all touched storages, for
+                                // which we need to record steps and statediff
+                                .set_steps_and_state_diffs(prestate_config.is_default_mode()),
                         );
                         let (res, _) = inspect(&mut *db, env, &mut inspector)?;
 
@@ -604,7 +610,7 @@ where
             match req {
                 JsDbRequest::Basic { address, resp } => {
                     let acc = db
-                        .basic(address)
+                        .basic_ref(address)
                         .map(|maybe_acc| {
                             maybe_acc.map(|acc| Account {
                                 nonce: acc.nonce,
@@ -617,13 +623,13 @@ where
                 }
                 JsDbRequest::Code { code_hash, resp } => {
                     let code = db
-                        .code_by_hash(code_hash)
+                        .code_by_hash_ref(code_hash)
                         .map(|code| code.bytecode)
                         .map_err(|err| err.to_string());
                     let _ = resp.send(code);
                 }
                 JsDbRequest::StorageAt { address, index, resp } => {
-                    let value = db.storage(address, index).map_err(|err| err.to_string());
+                    let value = db.storage_ref(address, index).map_err(|err| err.to_string());
                     let _ = resp.send(value);
                 }
             }
@@ -891,13 +897,10 @@ where
     /// Returns the bytes of the transaction for the given hash.
     async fn raw_transaction(&self, hash: B256) -> RpcResult<Bytes> {
         let tx = self.inner.eth_api.transaction_by_hash(hash).await?;
-
-        let mut res = Vec::new();
-        if let Some(tx) = tx.map(TransactionSource::into_recovered) {
-            tx.encode(&mut res);
-        }
-
-        Ok(res.into())
+        Ok(tx
+            .map(TransactionSource::into_recovered)
+            .map(|tx| tx.envelope_encoded())
+            .unwrap_or_default())
     }
 
     /// Handler for `debug_getRawReceipts`
