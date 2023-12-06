@@ -5,20 +5,21 @@ use clap::Args;
 use reth_config::Config;
 use reth_discv4::{DEFAULT_DISCOVERY_ADDR, DEFAULT_DISCOVERY_PORT};
 use reth_net_nat::NatResolver;
-use reth_network::{HelloMessage, NetworkConfigBuilder};
+use reth_network::{HelloMessageWithProtocols, NetworkConfigBuilder};
 use reth_primitives::{mainnet_nodes, ChainSpec, NodeRecord};
 use secp256k1::SecretKey;
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 /// Parameters for configuring the network more granularity via CLI
-#[derive(Debug, Args)]
-#[command(next_help_heading = "Networking")]
+#[derive(Debug, Args, PartialEq, Eq)]
+#[clap(next_help_heading = "Networking")]
 pub struct NetworkArgs {
     /// Disable the discovery service.
     #[command(flatten)]
     pub discovery: DiscoveryArgs,
 
-    /// Target trusted peer enodes
+    /// Comma separated enode URLs of trusted peers for P2P connections.
+    ///
     /// --trusted-peers enode://abcd@192.168.0.1:30303
     #[arg(long, value_delimiter = ',')]
     pub trusted_peers: Vec<NodeRecord>,
@@ -27,7 +28,7 @@ pub struct NetworkArgs {
     #[arg(long)]
     pub trusted_only: bool,
 
-    /// Bootnodes to connect to initially.
+    /// Comma separated enode URLs for P2P discovery bootstrap.
     ///
     /// Will fall back to a network-specific default if not specified.
     #[arg(long, value_delimiter = ',')]
@@ -107,8 +108,9 @@ impl NetworkArgs {
 
         // Configure node identity
         let peer_id = network_config_builder.get_peer_id();
-        network_config_builder = network_config_builder
-            .hello_message(HelloMessage::builder(peer_id).client_version(&self.identity).build());
+        network_config_builder = network_config_builder.hello_message(
+            HelloMessageWithProtocols::builder(peer_id).client_version(&self.identity).build(),
+        );
 
         self.discovery.apply_to_builder(network_config_builder)
     }
@@ -123,8 +125,28 @@ impl NetworkArgs {
     }
 }
 
+impl Default for NetworkArgs {
+    fn default() -> Self {
+        Self {
+            discovery: DiscoveryArgs::default(),
+            trusted_peers: vec![],
+            trusted_only: false,
+            bootnodes: None,
+            peers_file: None,
+            identity: P2P_CLIENT_VERSION.to_string(),
+            p2p_secret_key: None,
+            no_persist_peers: false,
+            nat: NatResolver::Any,
+            addr: DEFAULT_DISCOVERY_ADDR,
+            port: DEFAULT_DISCOVERY_PORT,
+            max_outbound_peers: None,
+            max_inbound_peers: None,
+        }
+    }
+}
+
 /// Arguments to setup discovery
-#[derive(Debug, Args)]
+#[derive(Debug, Args, PartialEq, Eq)]
 pub struct DiscoveryArgs {
     /// Disable the discovery service.
     #[arg(short, long, default_value_if("dev", "true", "true"))]
@@ -161,6 +183,18 @@ impl DiscoveryArgs {
             network_config_builder = network_config_builder.disable_discv4_discovery();
         }
         network_config_builder
+    }
+}
+
+impl Default for DiscoveryArgs {
+    fn default() -> Self {
+        Self {
+            disable_discovery: false,
+            disable_dns_discovery: false,
+            disable_discv4_discovery: false,
+            addr: DEFAULT_DISCOVERY_ADDR,
+            port: DEFAULT_DISCOVERY_PORT,
+        }
     }
 }
 
@@ -221,5 +255,13 @@ mod tests {
             "enode://22a8232c3abc76a16ae9d6c3b164f98775fe226f0917b0ca871128a74a8e9630b458460865bab457221f1d448dd9791d24c4e5d88786180ac185df813a68d4de@3.209.45.79:30303".parse().unwrap()
             ]
         );
+    }
+
+    #[test]
+    fn network_args_default_sanity_test() {
+        let default_args = NetworkArgs::default();
+        let args = CommandParser::<NetworkArgs>::parse_from(["reth"]).args;
+
+        assert_eq!(args, default_args);
     }
 }

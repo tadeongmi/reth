@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Errors associated with [`crate::NippyJar`].
-#[derive(Debug, Error)]
+#[derive(Error, Debug)]
 pub enum NippyJarError {
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -37,4 +37,8 @@ pub enum NippyJarError {
     UnsupportedFilterQuery,
     #[error("compression or decompression requires a bigger destination output")]
     OutputTooSmall,
+    #[error("Dictionary is not loaded.")]
+    DictionaryNotLoaded,
+    #[error("It's not possible to generate a compressor after loading a dictionary.")]
+    CompressorNotAllowed,
 }

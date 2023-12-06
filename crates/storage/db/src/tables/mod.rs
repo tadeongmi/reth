@@ -36,7 +36,7 @@ use crate::{
 };
 use reth_primitives::{
     stage::StageCheckpoint,
-    trie::{BranchNodeCompact, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey},
+    trie::{BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibblesSubKey},
     Account, Address, BlockHash, BlockNumber, Bytecode, Header, IntegerList, PruneCheckpoint,
     PruneSegment, Receipt, StorageEntry, TransactionSignedNoHash, TxHash, TxNumber, B256,
 };
@@ -59,7 +59,7 @@ pub const NUM_TABLES: usize = 26;
 /// # Example
 ///
 /// ```
-/// use reth_db::{ table::Table, TableViewer, Tables };
+/// use reth_db::{table::Table, TableViewer, Tables};
 /// use std::str::FromStr;
 ///
 /// let headers = Tables::from_str("Headers").unwrap();
@@ -384,7 +384,7 @@ dupsort!(
 
 table!(
     /// Stores the current state's Merkle Patricia Tree.
-    ( AccountsTrie ) StoredNibbles | BranchNodeCompact
+    ( AccountsTrie ) Nibbles | BranchNodeCompact
 );
 
 dupsort!(

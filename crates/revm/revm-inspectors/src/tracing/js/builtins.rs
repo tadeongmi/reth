@@ -1,12 +1,12 @@
 //! Builtin functions
 
+use alloy_primitives::{hex, Address, B256, U256};
 use boa_engine::{
     object::builtins::{JsArray, JsArrayBuffer},
     property::Attribute,
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
 };
 use boa_gc::{empty_trace, Finalize, Trace};
-use reth_primitives::{hex, Address, B256, U256};
 use std::collections::HashSet;
 
 /// bigIntegerJS is the minified version of <https://github.com/peterolson/BigInteger.js>.
@@ -65,24 +65,6 @@ pub(crate) fn to_buf(bytes: Vec<u8>, context: &mut Context<'_>) -> JsResult<JsAr
 /// Create a new array buffer object from byte block.
 pub(crate) fn to_buf_value(bytes: Vec<u8>, context: &mut Context<'_>) -> JsResult<JsValue> {
     Ok(to_buf(bytes, context)?.into())
-}
-
-/// Create a new array buffer object from byte block.
-pub(crate) fn to_bigint_array(items: &[U256], ctx: &mut Context<'_>) -> JsResult<JsArray> {
-    let arr = JsArray::new(ctx);
-    let bigint = ctx.global_object().get("bigint", ctx)?;
-    if !bigint.is_callable() {
-        return Err(JsError::from_native(
-            JsNativeError::typ().with_message("global object bigint is not callable"),
-        ))
-    }
-    let bigint = bigint.as_callable().unwrap();
-
-    for item in items {
-        let val = bigint.call(&JsValue::undefined(), &[JsValue::from(item.to_string())], ctx)?;
-        arr.push(val, ctx)?;
-    }
-    Ok(arr)
 }
 
 /// Converts a buffer type to an address.

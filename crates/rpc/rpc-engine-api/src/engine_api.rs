@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use jsonrpsee_core::RpcResult;
 use reth_beacon_consensus::BeaconConsensusEngineHandle;
 use reth_interfaces::consensus::ForkchoiceState;
-use reth_payload_builder::PayloadStore;
+use reth_payload_builder::{PayloadBuilderAttributes, PayloadStore};
 use reth_primitives::{BlockHash, BlockHashOrNumber, BlockNumber, ChainSpec, Hardfork, B256, U64};
 use reth_provider::{BlockReader, EvmEnvProvider, HeaderProvider, StateProviderFactory};
 use reth_rpc_api::EngineApiServer;
@@ -72,6 +72,19 @@ where
             metrics: EngineApiMetrics::default(),
         });
         Self { inner }
+    }
+
+    /// Fetches the attributes for the payload with the given id.
+    async fn get_payload_attributes(
+        &self,
+        payload_id: PayloadId,
+    ) -> EngineApiResult<PayloadBuilderAttributes> {
+        Ok(self
+            .inner
+            .payload_store
+            .payload_attributes(payload_id)
+            .await
+            .ok_or(EngineApiError::UnknownPayload)??)
     }
 
     /// See also <https://github.com/ethereum/execution-apis/blob/3d627c95a4d3510a8187dd02e0250ecb4331d27e/src/engine/paris.md#engine_newpayloadv1>
@@ -189,12 +202,7 @@ where
         payload_id: PayloadId,
     ) -> EngineApiResult<ExecutionPayloadEnvelopeV2> {
         // First we fetch the payload attributes to check the timestamp
-        let attributes = self
-            .inner
-            .payload_store
-            .payload_attributes(payload_id)
-            .await
-            .ok_or(EngineApiError::UnknownPayload)??;
+        let attributes = self.get_payload_attributes(payload_id).await?;
 
         // validate timestamp according to engine rules
         self.validate_payload_timestamp(EngineApiMessageVersion::V2, attributes.timestamp)?;
@@ -221,12 +229,7 @@ where
         payload_id: PayloadId,
     ) -> EngineApiResult<ExecutionPayloadEnvelopeV3> {
         // First we fetch the payload attributes to check the timestamp
-        let attributes = self
-            .inner
-            .payload_store
-            .payload_attributes(payload_id)
-            .await
-            .ok_or(EngineApiError::UnknownPayload)??;
+        let attributes = self.get_payload_attributes(payload_id).await?;
 
         // validate timestamp according to engine rules
         self.validate_payload_timestamp(EngineApiMessageVersion::V3, attributes.timestamp)?;
@@ -557,6 +560,13 @@ where
         if let Some(ref attrs) = payload_attrs {
             let attr_validation_res = self.validate_version_specific_fields(version, &attrs.into());
 
+            #[cfg(feature = "optimism")]
+            if attrs.optimism_payload_attributes.gas_limit.is_none() &&
+                self.inner.chain_spec.is_optimism()
+            {
+                return Err(EngineApiError::MissingGasLimitInPayloadAttributes)
+            }
+
             // From the engine API spec:
             //
             // Client software MUST ensure that payloadAttributes.timestamp is greater than
@@ -805,6 +815,7 @@ mod tests {
     use reth_payload_builder::test_utils::spawn_test_payload_service;
     use reth_primitives::{SealedBlock, B256, MAINNET};
     use reth_provider::test_utils::MockEthProvider;
+    use reth_rpc_types_compat::engine::payload::execution_payload_from_sealed_block;
     use reth_tasks::TokioTaskExecutor;
     use std::sync::Arc;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -837,7 +848,9 @@ mod tests {
         let (mut handle, api) = setup_engine_api();
 
         tokio::spawn(async move {
-            api.new_payload_v1(SealedBlock::default().into()).await.unwrap();
+            api.new_payload_v1(execution_payload_from_sealed_block(SealedBlock::default()))
+                .await
+                .unwrap();
         });
         assert_matches!(handle.from_api.recv().await, Some(BeaconEngineMessage::NewPayload { .. }));
     }

@@ -16,6 +16,9 @@ use tracing::warn;
 /// The number of transactions sampled in a block
 pub const SAMPLE_NUMBER: usize = 3_usize;
 
+/// The default maximum number of blocks to use for the gas price oracle.
+pub const MAX_HEADER_HISTORY: u64 = 1024;
+
 /// The default maximum gas price to use for the estimate
 pub const DEFAULT_MAX_PRICE: U256 = U256::from_limbs([500_000_000_000u64, 0, 0, 0]);
 
@@ -53,8 +56,8 @@ impl Default for GasPriceOracleConfig {
         GasPriceOracleConfig {
             blocks: 20,
             percentile: 60,
-            max_header_history: 1024,
-            max_block_history: 1024,
+            max_header_history: MAX_HEADER_HISTORY,
+            max_block_history: MAX_HEADER_HISTORY,
             default: None,
             max_price: Some(DEFAULT_MAX_PRICE),
             ignore_price: Some(DEFAULT_IGNORE_PRICE),
@@ -73,8 +76,8 @@ impl GasPriceOracleConfig {
         Self {
             blocks: blocks.unwrap_or(20),
             percentile: percentile.unwrap_or(60),
-            max_header_history: 1024,
-            max_block_history: 1024,
+            max_header_history: MAX_HEADER_HISTORY,
+            max_block_history: MAX_HEADER_HISTORY,
             default: None,
             max_price: max_price.map(U256::from).or(Some(DEFAULT_MAX_PRICE)),
             ignore_price: ignore_price.map(U256::from).or(Some(DEFAULT_IGNORE_PRICE)),
@@ -237,7 +240,7 @@ where
         let parent_hash = block.parent_hash;
 
         // sort the functions by ascending effective tip first
-        block.body.sort_by_cached_key(|tx| tx.effective_gas_tip(base_fee_per_gas));
+        block.body.sort_by_cached_key(|tx| tx.effective_tip_per_gas(base_fee_per_gas));
 
         let mut prices = Vec::with_capacity(limit);
 
@@ -245,7 +248,7 @@ where
             let mut effective_gas_tip = None;
             // ignore transactions with a tip under the configured threshold
             if let Some(ignore_under) = self.ignore_price {
-                let tip = tx.effective_gas_tip(base_fee_per_gas);
+                let tip = tx.effective_tip_per_gas(base_fee_per_gas);
                 effective_gas_tip = Some(tip);
                 if tip < Some(ignore_under) {
                     continue
@@ -262,7 +265,7 @@ where
             // a `None` effective_gas_tip represents a transaction where the max_fee_per_gas is
             // less than the base fee which would be invalid
             let effective_gas_tip = effective_gas_tip
-                .unwrap_or_else(|| tx.effective_gas_tip(base_fee_per_gas))
+                .unwrap_or_else(|| tx.effective_tip_per_gas(base_fee_per_gas))
                 .ok_or(RpcInvalidTransactionError::FeeCapTooLow)?;
 
             prices.push(U256::from(effective_gas_tip));

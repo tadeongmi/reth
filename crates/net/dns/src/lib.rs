@@ -118,11 +118,13 @@ impl<R: Resolver> DnsDiscoveryService<R> {
     /// Creates a new instance of the [DnsDiscoveryService] using the given settings.
     ///
     /// ```
-    /// use std::sync::Arc;
     /// use reth_dns_discovery::{DnsDiscoveryService, DnsResolver};
+    /// use std::sync::Arc;
     /// # fn t() {
-    ///  let service =
-    ///             DnsDiscoveryService::new(Arc::new(DnsResolver::from_system_conf().unwrap()), Default::default());
+    /// let service = DnsDiscoveryService::new(
+    ///     Arc::new(DnsResolver::from_system_conf().unwrap()),
+    ///     Default::default(),
+    /// );
     /// # }
     /// ```
     pub fn new(resolver: Arc<R>, config: DnsDiscoveryConfig) -> Self {
@@ -156,7 +158,7 @@ impl<R: Resolver> DnsDiscoveryService<R> {
             self.bootstrap();
 
             while let Some(event) = self.next().await {
-                trace!(target : "disc::dns", ?event,  "processed");
+                trace!(target: "disc::dns", ?event,  "processed");
             }
         })
     }
@@ -460,7 +462,7 @@ mod tests {
 
         let mut builder = EnrBuilder::new("v4");
         let mut buf = Vec::new();
-        let fork_id = Hardfork::Frontier.fork_id(&MAINNET).unwrap();
+        let fork_id = MAINNET.hardfork_fork_id(Hardfork::Frontier).unwrap();
         fork_id.encode(&mut buf);
         builder.ip4(Ipv4Addr::LOCALHOST).udp4(30303).tcp4(30303).add_value(b"eth", &buf);
         let enr = builder.build(&secret_key).unwrap();

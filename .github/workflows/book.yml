@@ -1,4 +1,7 @@
+# Documentation and mdbook related jobs.
+
 name: book
+
 on:
   push:
     branches: [main]
@@ -13,7 +16,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install mdbook
         run: |
@@ -36,7 +39,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install mdbook-linkcheck
         run: |
@@ -50,12 +53,13 @@ jobs:
         run: mdbook-linkcheck --standalone
 
   build:
+    # TODO: reenable when <https://github.com/rust-lang/rust/issues/118670> is resolved.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-
       - name: Install mdbook
         run: |
           mkdir mdbook
@@ -112,7 +116,8 @@ jobs:
 
   deploy:
     # Only deploy if a push to main
-    if: github.ref_name == 'main' && github.event_name == 'push'
+    # TODO: reenable when <https://github.com/rust-lang/rust/issues/118670> is resolved.
+    if: false && github.ref_name == 'main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [test, lint, build]
 

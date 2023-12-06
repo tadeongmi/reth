@@ -190,6 +190,7 @@ pub trait EthApi {
         &self,
         request: CallRequest,
         block_number: Option<BlockId>,
+        state_override: Option<StateOverride>,
     ) -> RpcResult<U256>;
 
     /// Returns the current price per gas in wei.
@@ -199,6 +200,10 @@ pub trait EthApi {
     /// Introduced in EIP-1559, returns suggestion for the priority for dynamic fee transactions.
     #[method(name = "maxPriorityFeePerGas")]
     async fn max_priority_fee_per_gas(&self) -> RpcResult<U256>;
+
+    /// Introduced in EIP-4844, returns the current blob gas price in wei.
+    #[method(name = "blobGasPrice")]
+    async fn blob_gas_price(&self) -> RpcResult<U256>;
 
     /// Returns the Transaction fee history
     ///

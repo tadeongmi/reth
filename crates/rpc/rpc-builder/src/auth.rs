@@ -1,6 +1,6 @@
 use crate::{
     constants,
-    constants::DEFAULT_MAX_LOGS_PER_RESPONSE,
+    constants::{DEFAULT_MAX_BLOCKS_PER_FILTER, DEFAULT_MAX_LOGS_PER_RESPONSE},
     error::{RpcError, ServerKind},
     EthConfig,
 };
@@ -16,7 +16,10 @@ use reth_provider::{
     StateProviderFactory,
 };
 use reth_rpc::{
-    eth::{cache::EthStateCache, gas_oracle::GasPriceOracle},
+    eth::{
+        cache::EthStateCache, gas_oracle::GasPriceOracle, EthFilterConfig, FeeHistoryCache,
+        FeeHistoryCacheConfig,
+    },
     AuthLayer, BlockingTaskPool, Claims, EngineEthApi, EthApi, EthFilter,
     EthSubscriptionIdProvider, JwtAuthValidator, JwtSecret,
 };
@@ -57,7 +60,11 @@ where
     // spawn a new cache task
     let eth_cache =
         EthStateCache::spawn_with(provider.clone(), Default::default(), executor.clone());
+
     let gas_oracle = GasPriceOracle::new(provider.clone(), Default::default(), eth_cache.clone());
+
+    let fee_history_cache =
+        FeeHistoryCache::new(eth_cache.clone(), FeeHistoryCacheConfig::default());
     let eth_api = EthApi::with_spawner(
         provider.clone(),
         pool.clone(),
@@ -67,15 +74,13 @@ where
         EthConfig::default().rpc_gas_cap,
         Box::new(executor.clone()),
         BlockingTaskPool::build().expect("failed to build tracing pool"),
+        fee_history_cache,
     );
-    let eth_filter = EthFilter::new(
-        provider,
-        pool,
-        eth_cache.clone(),
-        DEFAULT_MAX_LOGS_PER_RESPONSE,
-        Box::new(executor.clone()),
-        EthConfig::default().stale_filter_ttl,
-    );
+    let config = EthFilterConfig::default()
+        .max_logs_per_response(DEFAULT_MAX_LOGS_PER_RESPONSE)
+        .max_blocks_per_filter(DEFAULT_MAX_BLOCKS_PER_FILTER);
+    let eth_filter =
+        EthFilter::new(provider, pool, eth_cache.clone(), config, Box::new(executor.clone()));
     launch_with_eth_api(eth_api, eth_filter, engine_api, socket_addr, secret).await
 }
 
@@ -128,7 +133,7 @@ where
 pub struct AuthServerConfig {
     /// Where the server should listen.
     pub(crate) socket_addr: SocketAddr,
-    /// The secrete for the auth layer of the server.
+    /// The secret for the auth layer of the server.
     pub(crate) secret: JwtSecret,
     /// Configs for JSON-RPC Http.
     pub(crate) server_config: ServerBuilder,

@@ -14,10 +14,14 @@ use alloy_rlp::{Decodable, Encodable};
 use async_trait::async_trait;
 use jsonrpsee::core::RpcResult;
 use reth_primitives::{
-    revm::env::tx_env_with_recovered, Account, Address, Block, BlockId, BlockNumberOrTag, Bytes,
-    TransactionSigned, B256,
+    revm::env::tx_env_with_recovered,
+    revm_primitives::{
+        db::{DatabaseCommit, DatabaseRef},
+        BlockEnv, CfgEnv,
+    },
+    Address, Block, BlockId, BlockNumberOrTag, Bytes, TransactionSigned, B256,
 };
-use reth_provider::{BlockReaderIdExt, HeaderProvider, StateProviderBox};
+use reth_provider::{BlockReaderIdExt, HeaderProvider, StateProviderBox, TransactionVariant};
 use reth_revm::{
     database::{StateProviderDatabase, SubState},
     tracing::{
@@ -37,10 +41,6 @@ use reth_tasks::TaskSpawner;
 use revm::{
     db::{CacheDB, EmptyDB},
     primitives::Env,
-};
-use revm_primitives::{
-    db::{DatabaseCommit, DatabaseRef},
-    BlockEnv, CfgEnv,
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, AcquireError, OwnedSemaphorePermit};
@@ -354,7 +354,8 @@ where
         let StateContext { transaction_index, block_number } = state_context.unwrap_or_default();
         let transaction_index = transaction_index.unwrap_or_default();
 
-        let target_block = block_number.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest));
+        let target_block = block_number
+            .unwrap_or(reth_rpc_types::BlockId::Number(reth_rpc_types::BlockNumberOrTag::Latest));
         let ((cfg, block_env, _), block) = futures::try_join!(
             self.inner.eth_api.evm_env_at(target_block),
             self.inner.eth_api.block_by_id(target_block),
@@ -457,7 +458,7 @@ where
         opts: GethDebugTracingOptions,
         env: Env,
         at: BlockId,
-        db: &mut SubState<StateProviderBox<'_>>,
+        db: &mut SubState<StateProviderBox>,
     ) -> EthResult<(GethTrace, revm_primitives::State)> {
         let GethDebugTracingOptions { config, tracer, tracer_config, .. } = opts;
 
@@ -609,16 +610,7 @@ where
         while let Some(req) = stream.next().await {
             match req {
                 JsDbRequest::Basic { address, resp } => {
-                    let acc = db
-                        .basic_ref(address)
-                        .map(|maybe_acc| {
-                            maybe_acc.map(|acc| Account {
-                                nonce: acc.nonce,
-                                balance: acc.balance,
-                                bytecode_hash: Some(acc.code_hash),
-                            })
-                        })
-                        .map_err(|err| err.to_string());
+                    let acc = db.basic_ref(address).map_err(|err| err.to_string());
                     let _ = resp.send(acc);
                 }
                 JsDbRequest::Code { code_hash, resp } => {
@@ -901,6 +893,18 @@ where
             .map(TransactionSource::into_recovered)
             .map(|tx| tx.envelope_encoded())
             .unwrap_or_default())
+    }
+
+    /// Handler for `debug_getRawTransactions`
+    /// Returns the bytes of the transaction for the given hash.
+    async fn raw_transactions(&self, block_id: BlockId) -> RpcResult<Vec<Bytes>> {
+        let block = self
+            .inner
+            .provider
+            .block_with_senders_by_id(block_id, TransactionVariant::NoHash)
+            .to_rpc_result()?
+            .unwrap_or_default();
+        Ok(block.into_transactions_ecrecovered().map(|tx| tx.envelope_encoded()).collect())
     }
 
     /// Handler for `debug_getRawReceipts`

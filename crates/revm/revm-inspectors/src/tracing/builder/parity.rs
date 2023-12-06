@@ -1,13 +1,17 @@
 use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     types::{CallTraceNode, CallTraceStep},
+    utils::load_account_code,
     TracingInspectorConfig,
 };
-use reth_primitives::{Address, U64};
+use alloy_primitives::{Address, U64};
 use reth_rpc_types::{trace::parity::*, TransactionInfo};
 use revm::{
     db::DatabaseRef,
-    interpreter::opcode::{self, spec_opcode_gas},
+    interpreter::{
+        opcode::{self, spec_opcode_gas},
+        OpCode,
+    },
     primitives::{Account, ExecutionResult, ResultAndState, SpecId, KECCAK_EMPTY},
 };
 use std::collections::{HashSet, VecDeque};
@@ -28,7 +32,7 @@ pub struct ParityTraceBuilder {
 
 impl ParityTraceBuilder {
     /// Returns a new instance of the builder
-    pub(crate) fn new(
+    pub fn new(
         nodes: Vec<CallTraceNode>,
         spec_id: Option<SpecId>,
         _config: TracingInspectorConfig,
@@ -135,7 +139,7 @@ impl ParityTraceBuilder {
         })
     }
 
-    /// Returns an iterator over all recorded traces  for `trace_transaction`
+    /// Returns all recorded traces for `trace_transaction`
     pub fn into_localized_transaction_traces(
         self,
         info: TransactionInfo,
@@ -384,85 +388,9 @@ impl ParityTraceBuilder {
             })
         };
 
-        // Calculate the stack items at this step
-        let push_stack = {
-            let step_op = step.op.get();
-            let show_stack: usize;
-            if (opcode::PUSH0..=opcode::PUSH32).contains(&step_op) {
-                show_stack = 1;
-            } else if (opcode::SWAP1..=opcode::SWAP16).contains(&step_op) {
-                show_stack = (step_op - opcode::SWAP1) as usize + 2;
-            } else if (opcode::DUP1..=opcode::DUP16).contains(&step_op) {
-                show_stack = (step_op - opcode::DUP1) as usize + 2;
-            } else {
-                show_stack = match step_op {
-                    opcode::CALLDATALOAD |
-                    opcode::SLOAD |
-                    opcode::MLOAD |
-                    opcode::CALLDATASIZE |
-                    opcode::LT |
-                    opcode::GT |
-                    opcode::DIV |
-                    opcode::SDIV |
-                    opcode::SAR |
-                    opcode::AND |
-                    opcode::EQ |
-                    opcode::CALLVALUE |
-                    opcode::ISZERO |
-                    opcode::ADD |
-                    opcode::EXP |
-                    opcode::CALLER |
-                    opcode::KECCAK256 |
-                    opcode::SUB |
-                    opcode::ADDRESS |
-                    opcode::GAS |
-                    opcode::MUL |
-                    opcode::RETURNDATASIZE |
-                    opcode::NOT |
-                    opcode::SHR |
-                    opcode::SHL |
-                    opcode::EXTCODESIZE |
-                    opcode::SLT |
-                    opcode::OR |
-                    opcode::NUMBER |
-                    opcode::PC |
-                    opcode::TIMESTAMP |
-                    opcode::BALANCE |
-                    opcode::SELFBALANCE |
-                    opcode::MULMOD |
-                    opcode::ADDMOD |
-                    opcode::BASEFEE |
-                    opcode::BLOCKHASH |
-                    opcode::BYTE |
-                    opcode::XOR |
-                    opcode::ORIGIN |
-                    opcode::CODESIZE |
-                    opcode::MOD |
-                    opcode::SIGNEXTEND |
-                    opcode::GASLIMIT |
-                    opcode::DIFFICULTY |
-                    opcode::SGT |
-                    opcode::GASPRICE |
-                    opcode::MSIZE |
-                    opcode::EXTCODEHASH |
-                    opcode::SMOD |
-                    opcode::CHAINID |
-                    opcode::COINBASE => 1,
-                    _ => 0,
-                }
-            };
-            let mut push_stack = step.push_stack.clone().unwrap_or_default();
-            for idx in (0..show_stack).rev() {
-                if step.stack.len() > idx {
-                    push_stack.push(step.stack.peek(idx).unwrap_or_default())
-                }
-            }
-            push_stack
-        };
-
         let maybe_execution = Some(VmExecutedOperation {
             used: step.gas_remaining,
-            push: push_stack,
+            push: step.push_stack.clone().unwrap_or_default(),
             mem: maybe_memory,
             store: maybe_storage,
         });
@@ -486,10 +414,6 @@ impl ParityTraceBuilder {
 }
 
 /// An iterator for [TransactionTrace]s
-///
-/// This iterator handles additional selfdestruct actions based on the last emitted
-/// [TransactionTrace], since selfdestructs are not recorded as individual call traces but are
-/// derived from recorded call
 struct TransactionTraceIter<Iter> {
     iter: Iter,
     next_selfdestruct: Option<TransactionTrace>,
@@ -583,14 +507,14 @@ where
         if changed_acc.is_created() || changed_acc.is_loaded_as_not_existing() {
             entry.balance = Delta::Added(changed_acc.info.balance);
             entry.nonce = Delta::Added(U64::from(changed_acc.info.nonce));
-            if changed_acc.info.code_hash == KECCAK_EMPTY {
-                // this is an additional check to ensure new accounts always get the empty code
-                // marked as added
-                entry.code = Delta::Added(Default::default());
-            }
 
-            // new storage values
-            for (key, slot) in changed_acc.storage.iter() {
+            // accounts without code are marked as added
+            let account_code = load_account_code(&db, &changed_acc.info).unwrap_or_default();
+            entry.code = Delta::Added(account_code);
+
+            // new storage values are marked as added,
+            // however we're filtering changed here to avoid adding entries for the zero value
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
                 entry.storage.insert((*key).into(), Delta::Added(slot.present_value.into()));
             }
         } else {
@@ -637,4 +561,72 @@ where
     }
 
     Ok(())
+}
+
+/// Returns the number of items pushed on the stack by a given opcode.
+/// This used to determine how many stack etries to put in the `push` element
+/// in a parity vmTrace.
+/// The value is obvious for most opcodes, but SWAP* and DUP* are a bit weird,
+/// and we handle those as they are handled in parity vmtraces.
+/// For reference: <https://github.com/ledgerwatch/erigon/blob/9b74cf0384385817459f88250d1d9c459a18eab1/turbo/jsonrpc/trace_adhoc.go#L451>
+pub(crate) fn stack_push_count(step_op: OpCode) -> usize {
+    let step_op = step_op.get();
+    match step_op {
+        opcode::PUSH0..=opcode::PUSH32 => 1,
+        opcode::SWAP1..=opcode::SWAP16 => (step_op - opcode::SWAP1) as usize + 2,
+        opcode::DUP1..=opcode::DUP16 => (step_op - opcode::DUP1) as usize + 2,
+        opcode::CALLDATALOAD |
+        opcode::SLOAD |
+        opcode::MLOAD |
+        opcode::CALLDATASIZE |
+        opcode::LT |
+        opcode::GT |
+        opcode::DIV |
+        opcode::SDIV |
+        opcode::SAR |
+        opcode::AND |
+        opcode::EQ |
+        opcode::CALLVALUE |
+        opcode::ISZERO |
+        opcode::ADD |
+        opcode::EXP |
+        opcode::CALLER |
+        opcode::KECCAK256 |
+        opcode::SUB |
+        opcode::ADDRESS |
+        opcode::GAS |
+        opcode::MUL |
+        opcode::RETURNDATASIZE |
+        opcode::NOT |
+        opcode::SHR |
+        opcode::SHL |
+        opcode::EXTCODESIZE |
+        opcode::SLT |
+        opcode::OR |
+        opcode::NUMBER |
+        opcode::PC |
+        opcode::TIMESTAMP |
+        opcode::BALANCE |
+        opcode::SELFBALANCE |
+        opcode::MULMOD |
+        opcode::ADDMOD |
+        opcode::BASEFEE |
+        opcode::BLOCKHASH |
+        opcode::BYTE |
+        opcode::XOR |
+        opcode::ORIGIN |
+        opcode::CODESIZE |
+        opcode::MOD |
+        opcode::SIGNEXTEND |
+        opcode::GASLIMIT |
+        opcode::DIFFICULTY |
+        opcode::SGT |
+        opcode::GASPRICE |
+        opcode::MSIZE |
+        opcode::EXTCODEHASH |
+        opcode::SMOD |
+        opcode::CHAINID |
+        opcode::COINBASE => 1,
+        _ => 0,
+    }
 }

@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use jsonrpsee::core::RpcResult as Result;
 use reth_consensus_common::calc::{base_block_reward, block_reward};
 use reth_primitives::{
-    revm::env::tx_env_with_recovered, BlockId, BlockNumberOrTag, Bytes, SealedHeader, B256, U256,
+    revm::env::tx_env_with_recovered, revm_primitives::db::DatabaseCommit, BlockId,
+    BlockNumberOrTag, Bytes, SealedHeader, B256, U256,
 };
 use reth_provider::{BlockReader, ChainSpecProvider, EvmEnvProvider, StateProviderFactory};
 use reth_revm::{
@@ -20,11 +21,11 @@ use reth_revm::{
 };
 use reth_rpc_api::TraceApiServer;
 use reth_rpc_types::{
-    trace::{filter::TraceFilter, parity::*, tracerequest::TraceRequest},
-    BlockError, CallRequest, Index,
+    state::StateOverride,
+    trace::{filter::TraceFilter, parity::*, tracerequest::TraceCallRequest},
+    BlockError, BlockOverrides, CallRequest, Index,
 };
 use revm::{db::CacheDB, primitives::Env};
-use revm_primitives::db::DatabaseCommit;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
 
@@ -65,9 +66,9 @@ where
     Eth: EthTransactions + 'static,
 {
     /// Executes the given call and returns a number of possible traces for it.
-    pub async fn trace_call(&self, trace_request: TraceRequest) -> EthResult<TraceResults> {
+    pub async fn trace_call(&self, trace_request: TraceCallRequest) -> EthResult<TraceResults> {
         let at = trace_request.block_id.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest));
-        let config = tracing_config(&trace_request.trace_types);
+        let config = TracingInspectorConfig::from_parity_config(&trace_request.trace_types);
         let overrides =
             EvmOverrides::new(trace_request.state_overrides, trace_request.block_overrides);
         let mut inspector = TracingInspector::new(config);
@@ -102,7 +103,7 @@ where
         let tx = tx_env_with_recovered(&tx.into_ecrecovered_transaction());
         let env = Env { cfg, block, tx };
 
-        let config = tracing_config(&trace_types);
+        let config = TracingInspectorConfig::from_parity_config(&trace_types);
 
         self.inner
             .eth_api
@@ -147,7 +148,7 @@ where
                         &mut db,
                         Default::default(),
                     )?;
-                    let config = tracing_config(&trace_types);
+                    let config = TracingInspectorConfig::from_parity_config(&trace_types);
                     let mut inspector = TracingInspector::new(config);
                     let (res, _) = inspect(&mut db, env, &mut inspector)?;
 
@@ -179,7 +180,7 @@ where
         hash: B256,
         trace_types: HashSet<TraceType>,
     ) -> EthResult<TraceResults> {
-        let config = tracing_config(&trace_types);
+        let config = TracingInspectorConfig::from_parity_config(&trace_types);
         self.inner
             .eth_api
             .spawn_trace_transaction_in_block(hash, config, move |_, inspector, res, db| {
@@ -402,7 +403,7 @@ where
             .eth_api
             .trace_block_with(
                 block_id,
-                tracing_config(&trace_types),
+                TracingInspectorConfig::from_parity_config(&trace_types),
                 move |tx_info, inspector, res, state, db| {
                     let mut full_trace =
                         inspector.into_parity_builder().into_trace_results(&res, &trace_types);
@@ -433,9 +434,18 @@ where
     /// Executes the given call and returns a number of possible traces for it.
     ///
     /// Handler for `trace_call`
-    async fn trace_call(&self, trace_request: TraceRequest) -> Result<TraceResults> {
+    async fn trace_call(
+        &self,
+        call: CallRequest,
+        trace_types: HashSet<TraceType>,
+        block_id: Option<BlockId>,
+        state_overrides: Option<StateOverride>,
+        block_overrides: Option<Box<BlockOverrides>>,
+    ) -> Result<TraceResults> {
         let _permit = self.acquire_trace_permit().await;
-        Ok(TraceApi::trace_call(self, trace_request).await?)
+        let request =
+            TraceCallRequest { call, trace_types, block_id, state_overrides, block_overrides };
+        Ok(TraceApi::trace_call(self, request).await?)
     }
 
     /// Handler for `trace_callMany`
@@ -539,16 +549,6 @@ struct TraceApiInner<Provider, Eth> {
     blocking_task_guard: BlockingTaskGuard,
 }
 
-/// Returns the [TracingInspectorConfig] depending on the enabled [TraceType]s
-///
-/// Note: the parity statediffs can be populated entirely via the execution result, so we don't need
-/// statediff recording
-#[inline]
-fn tracing_config(trace_types: &HashSet<TraceType>) -> TracingInspectorConfig {
-    let needs_vm_trace = trace_types.contains(&TraceType::VmTrace);
-    TracingInspectorConfig::default_parity().set_steps(needs_vm_trace)
-}
-
 /// Helper to construct a [`LocalizedTransactionTrace`] that describes a reward to the block
 /// beneficiary.
 fn reward_trace(header: &SealedHeader, reward: RewardAction) -> LocalizedTransactionTrace {
@@ -564,34 +564,5 @@ fn reward_trace(header: &SealedHeader, reward: RewardAction) -> LocalizedTransac
             error: None,
             result: None,
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parity_config() {
-        let mut s = HashSet::new();
-        s.insert(TraceType::StateDiff);
-        let config = tracing_config(&s);
-        // not required
-        assert!(!config.record_steps);
-        assert!(!config.record_state_diff);
-
-        let mut s = HashSet::new();
-        s.insert(TraceType::VmTrace);
-        let config = tracing_config(&s);
-        assert!(config.record_steps);
-        assert!(!config.record_state_diff);
-
-        let mut s = HashSet::new();
-        s.insert(TraceType::VmTrace);
-        s.insert(TraceType::StateDiff);
-        let config = tracing_config(&s);
-        assert!(config.record_steps);
-        // not required for StateDiff
-        assert!(!config.record_state_diff);
     }
 }

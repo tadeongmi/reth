@@ -14,28 +14,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-/// Describes the current head block.
-///
-/// The head block is the highest fully synced block.
-///
-/// Note: This is a slimmed down version of [Header], primarily for communicating the highest block
-/// with the P2P network and the RPC.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
-pub struct Head {
-    /// The number of the head block.
-    pub number: BlockNumber,
-    /// The hash of the head block.
-    pub hash: B256,
-    /// The difficulty of the head block.
-    pub difficulty: U256,
-    /// The total difficulty at the head block.
-    pub total_difficulty: U256,
-    /// The timestamp of the head block.
-    pub timestamp: u64,
-}
-
 /// Block header
 #[main_codec]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -219,11 +197,13 @@ impl Header {
     /// Seal the header with a known hash.
     ///
     /// WARNING: This method does not perform validation whether the hash is correct.
+    #[inline]
     pub fn seal(self, hash: B256) -> SealedHeader {
         SealedHeader { header: self, hash }
     }
 
     /// Calculate hash and seal the Header so that it can't be changed.
+    #[inline]
     pub fn seal_slow(self) -> SealedHeader {
         let hash = self.hash_slow();
         self.seal(hash)

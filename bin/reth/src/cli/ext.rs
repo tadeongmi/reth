@@ -1,16 +1,14 @@
 //! Support for integrating customizations into the CLI.
 
 use crate::cli::{
-    components::{RethNodeComponents, RethRpcComponents},
-    config::{PayloadBuilderConfig, RethRpcConfig},
+    components::{RethNodeComponents, RethRpcComponents, RethRpcServerHandles},
+    config::{PayloadBuilderConfig, RethNetworkConfig, RethRpcConfig},
 };
 use clap::Args;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_payload_builder::{PayloadBuilderHandle, PayloadBuilderService};
 use reth_tasks::TaskSpawner;
 use std::{fmt, marker::PhantomData};
-
-use crate::cli::components::RethRpcServerHandles;
 
 /// A trait that allows for extending parts of the CLI with additional functionality.
 ///
@@ -32,8 +30,36 @@ impl RethCliExt for () {
 
 /// A trait that allows for extending and customizing parts of the node command
 /// [NodeCommand](crate::node::NodeCommand).
+///
+/// The functions are invoked during the initialization of the node command in the following order:
+///
+/// 1. [configure_network](RethNodeCommandConfig::configure_network)
+/// 2. [on_components_initialized](RethNodeCommandConfig::on_components_initialized)
+/// 3. [spawn_payload_builder_service](RethNodeCommandConfig::spawn_payload_builder_service)
+/// 4. [extend_rpc_modules](RethNodeCommandConfig::extend_rpc_modules)
+/// 5. [on_rpc_server_started](RethNodeCommandConfig::on_rpc_server_started)
+/// 6. [on_node_started](RethNodeCommandConfig::on_node_started)
 pub trait RethNodeCommandConfig: fmt::Debug {
+    /// Invoked with the network configuration before the network is configured.
+    ///
+    /// This allows additional configuration of the network before it is launched.
+    fn configure_network<Conf, Reth>(
+        &mut self,
+        config: &mut Conf,
+        components: &Reth,
+    ) -> eyre::Result<()>
+    where
+        Conf: RethNetworkConfig,
+        Reth: RethNodeComponents,
+    {
+        let _ = config;
+        let _ = components;
+        Ok(())
+    }
+
     /// Event hook called once all components have been initialized.
+    ///
+    /// This is called as soon as the node components have been initialized.
     fn on_components_initialized<Reth: RethNodeComponents>(
         &mut self,
         components: &Reth,
@@ -43,12 +69,16 @@ pub trait RethNodeCommandConfig: fmt::Debug {
     }
 
     /// Event hook called once the node has been launched.
+    ///
+    /// This is called last after the node has been launched.
     fn on_node_started<Reth: RethNodeComponents>(&mut self, components: &Reth) -> eyre::Result<()> {
         let _ = components;
         Ok(())
     }
 
     /// Event hook called once the rpc servers has been started.
+    ///
+    /// This is called after the rpc server has been started.
     fn on_rpc_server_started<Conf, Reth>(
         &mut self,
         config: &Conf,
@@ -70,7 +100,9 @@ pub trait RethNodeCommandConfig: fmt::Debug {
     /// Allows for registering additional RPC modules for the transports.
     ///
     /// This is expected to call the merge functions of [reth_rpc_builder::TransportRpcModules], for
-    /// example [reth_rpc_builder::TransportRpcModules::merge_configured]
+    /// example [reth_rpc_builder::TransportRpcModules::merge_configured].
+    ///
+    /// This is called before the rpc server will be started [Self::on_rpc_server_started].
     fn extend_rpc_modules<Conf, Reth>(
         &mut self,
         config: &Conf,
@@ -101,17 +133,33 @@ pub trait RethNodeCommandConfig: fmt::Debug {
         Conf: PayloadBuilderConfig,
         Reth: RethNodeComponents,
     {
-        let payload_generator = BasicPayloadJobGenerator::new(
+        let payload_job_config = BasicPayloadJobGeneratorConfig::default()
+            .interval(conf.interval())
+            .deadline(conf.deadline())
+            .max_payload_tasks(conf.max_payload_tasks())
+            .extradata(conf.extradata_rlp_bytes())
+            .max_gas_limit(conf.max_gas_limit());
+
+        #[cfg(feature = "optimism")]
+        let payload_job_config =
+            payload_job_config.compute_pending_block(conf.compute_pending_block());
+
+        // The default payload builder is implemented on the unit type.
+        #[cfg(not(feature = "optimism"))]
+        #[allow(clippy::let_unit_value)]
+        let payload_builder = reth_basic_payload_builder::EthereumPayloadBuilder::default();
+
+        // Optimism's payload builder is implemented on the OptimismPayloadBuilder type.
+        #[cfg(feature = "optimism")]
+        let payload_builder = reth_basic_payload_builder::OptimismPayloadBuilder::default();
+
+        let payload_generator = BasicPayloadJobGenerator::with_builder(
             components.provider(),
             components.pool(),
             components.task_executor(),
-            BasicPayloadJobGeneratorConfig::default()
-                .interval(conf.interval())
-                .deadline(conf.deadline())
-                .max_payload_tasks(conf.max_payload_tasks())
-                .extradata(conf.extradata_rlp_bytes())
-                .max_gas_limit(conf.max_gas_limit()),
+            payload_job_config,
             components.chain_spec(),
+            payload_builder,
         );
         let (payload_service, payload_builder) = PayloadBuilderService::new(payload_generator);
 
@@ -192,6 +240,22 @@ impl<T> NoArgs<T> {
 }
 
 impl<T: RethNodeCommandConfig> RethNodeCommandConfig for NoArgs<T> {
+    fn configure_network<Conf, Reth>(
+        &mut self,
+        config: &mut Conf,
+        components: &Reth,
+    ) -> eyre::Result<()>
+    where
+        Conf: RethNetworkConfig,
+        Reth: RethNodeComponents,
+    {
+        if let Some(conf) = self.inner_mut() {
+            conf.configure_network(config, components)
+        } else {
+            Ok(())
+        }
+    }
+
     fn on_components_initialized<Reth: RethNodeComponents>(
         &mut self,
         components: &Reth,

@@ -25,9 +25,49 @@ pub type MockTxPool = TxPool<MockOrdering>;
 
 pub type MockValidTx = ValidPoolTransaction<MockTransaction>;
 
+#[cfg(feature = "optimism")]
+use reth_primitives::DEPOSIT_TX_TYPE_ID;
+
+#[cfg(feature = "optimism")]
+use reth_primitives::TxDeposit;
+
 /// Create an empty `TxPool`
 pub fn mock_tx_pool() -> MockTxPool {
     MockTxPool::new(Default::default(), Default::default())
+}
+
+macro_rules! op_set_value {
+    ($this:ident, sender, $value:ident) => {
+        $this.from = $value;
+    };
+    ($this:ident, gas_limit, $value:ident) => {
+        $this.gas_limit = $value;
+    };
+    ($this:ident, value, $value:ident) => {
+        $this.value = $value.into();
+    };
+    ($this:ident, input, $value:ident) => {
+        $this.value = $value;
+    };
+    ($this:ident, $other:ident, $field:ident) => {};
+}
+
+macro_rules! op_get_value {
+    ($this:ident, sender) => {
+        $this.from
+    };
+    ($this:ident, gas_limit) => {
+        $this.gas_limit
+    };
+    ($this:ident, value) => {
+        $this.value.into()
+    };
+    ($this:ident, input) => {
+        $this.input.clone()
+    };
+    ($this:ident, $other:ident) => {
+        Default::default()
+    };
 }
 
 /// Sets the value for the field
@@ -47,18 +87,26 @@ macro_rules! set_value {
             MockTransaction::Eip2930 { ref mut $field, .. } => {
                 *$field = new_value;
             }
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(ref mut tx) => {
+                op_set_value!(tx, $this, new_value);
+            }
         }
     };
 }
 
-/// Sets the value fo the field
+/// Gets the value for the field
 macro_rules! get_value {
-    ($this:ident => $field:ident) => {
+    ($this:tt => $field:ident) => {
         match $this {
-            MockTransaction::Legacy { $field, .. } => $field,
-            MockTransaction::Eip1559 { $field, .. } => $field,
-            MockTransaction::Eip4844 { $field, .. } => $field,
-            MockTransaction::Eip2930 { $field, .. } => $field,
+            MockTransaction::Legacy { $field, .. } => $field.clone(),
+            MockTransaction::Eip1559 { $field, .. } => $field.clone(),
+            MockTransaction::Eip4844 { $field, .. } => $field.clone(),
+            MockTransaction::Eip2930 { $field, .. } => $field.clone(),
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(tx) => {
+                op_get_value!(tx, $field)
+            }
         }
     };
 }
@@ -78,7 +126,7 @@ macro_rules! make_setters_getters {
             }
 
             pub fn [<get_ $name>](&self) -> $t {
-                get_value!(self => $name).clone()
+                get_value!(self => $name)
             }
         )*}
     };
@@ -134,6 +182,8 @@ pub enum MockTransaction {
         gas_price: u128,
         accesslist: AccessList,
     },
+    #[cfg(feature = "optimism")]
+    Deposit(TxDeposit),
 }
 
 // === impl MockTransaction ===
@@ -193,6 +243,55 @@ impl MockTransaction {
             input: Bytes::new(),
             accesslist: Default::default(),
             sidecar: Default::default(),
+        }
+    }
+
+    /// Returns a new EIP2930 transaction with random address and hash and empty values
+    pub fn eip2930() -> Self {
+        MockTransaction::Eip2930 {
+            hash: B256::random(),
+            sender: Address::random(),
+            nonce: 0,
+            to: TransactionKind::Call(Address::random()),
+            gas_limit: 0,
+            input: Bytes::new(),
+            value: Default::default(),
+            gas_price: 0,
+            accesslist: Default::default(),
+        }
+    }
+
+    /// Returns a new deposit transaction with random address and hash and empty values
+    #[cfg(feature = "optimism")]
+    pub fn deposit() -> Self {
+        MockTransaction::Deposit(TxDeposit {
+            source_hash: B256::random(),
+            from: Address::random(),
+            to: TransactionKind::Call(Address::random()),
+            mint: Some(0),
+            value: Default::default(),
+            gas_limit: 0,
+            is_system_transaction: false,
+            input: Bytes::new(),
+        })
+    }
+
+    /// Creates a new transaction with the given [TxType].
+    ///
+    /// See the default constructors for each of the transaction types:
+    ///
+    /// * [MockTransaction::legacy]
+    /// * [MockTransaction::eip2930]
+    /// * [MockTransaction::eip1559]
+    /// * [MockTransaction::eip4844]
+    pub fn new_from_type(tx_type: TxType) -> Self {
+        match tx_type {
+            TxType::Legacy => Self::legacy(),
+            TxType::EIP2930 => Self::eip2930(),
+            TxType::EIP1559 => Self::eip1559(),
+            TxType::EIP4844 => Self::eip4844(),
+            #[cfg(feature = "optimism")]
+            TxType::DEPOSIT => Self::deposit(),
         }
     }
 
@@ -271,6 +370,8 @@ impl MockTransaction {
             MockTransaction::Eip2930 { accesslist, .. } => {
                 *accesslist = list;
             }
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit { .. } => {}
         }
         self
     }
@@ -289,6 +390,8 @@ impl MockTransaction {
                 *max_priority_fee_per_gas = val;
             }
             MockTransaction::Eip2930 { gas_price, .. } => *gas_price = val,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => {}
         }
         self
     }
@@ -317,16 +420,20 @@ impl MockTransaction {
             MockTransaction::Eip2930 { ref mut gas_price, .. } => {
                 *gas_price = val;
             }
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => {}
         }
         self
     }
 
     pub fn get_gas_price(&self) -> u128 {
         match self {
-            MockTransaction::Legacy { gas_price, .. } => *gas_price,
-            MockTransaction::Eip1559 { max_fee_per_gas, .. } => *max_fee_per_gas,
-            MockTransaction::Eip4844 { max_fee_per_gas, .. } => *max_fee_per_gas,
+            MockTransaction::Legacy { gas_price, .. } |
             MockTransaction::Eip2930 { gas_price, .. } => *gas_price,
+            MockTransaction::Eip1559 { max_fee_per_gas, .. } |
+            MockTransaction::Eip4844 { max_fee_per_gas, .. } => *max_fee_per_gas,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => 0u128,
         }
     }
 
@@ -403,6 +510,8 @@ impl MockTransaction {
             Self::Eip1559 { .. } => EIP1559_TX_TYPE_ID,
             Self::Eip4844 { .. } => EIP4844_TX_TYPE_ID,
             Self::Eip2930 { .. } => EIP2930_TX_TYPE_ID,
+            #[cfg(feature = "optimism")]
+            Self::Deposit(_) => DEPOSIT_TX_TYPE_ID,
         }
     }
 
@@ -430,6 +539,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { hash, .. } => hash,
             MockTransaction::Eip4844 { hash, .. } => hash,
             MockTransaction::Eip2930 { hash, .. } => hash,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(TxDeposit { source_hash, .. }) => source_hash,
         }
     }
 
@@ -439,6 +550,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { sender, .. } => *sender,
             MockTransaction::Eip4844 { sender, .. } => *sender,
             MockTransaction::Eip2930 { sender, .. } => *sender,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(TxDeposit { from, .. }) => *from,
         }
     }
 
@@ -448,6 +561,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { nonce, .. } => *nonce,
             MockTransaction::Eip4844 { nonce, .. } => *nonce,
             MockTransaction::Eip2930 { nonce, .. } => *nonce,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => 0u64,
         }
     }
 
@@ -465,6 +580,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip2930 { gas_limit, gas_price, value, .. } => {
                 U256::from(*gas_limit) * U256::from(*gas_price) + *value
             }
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => U256::ZERO,
         }
     }
 
@@ -478,6 +595,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { max_fee_per_gas, .. } => *max_fee_per_gas,
             MockTransaction::Eip4844 { max_fee_per_gas, .. } => *max_fee_per_gas,
             MockTransaction::Eip2930 { gas_price, .. } => *gas_price,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => 0u128,
         }
     }
 
@@ -487,6 +606,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { accesslist: accessslist, .. } => Some(accessslist),
             MockTransaction::Eip4844 { accesslist: accessslist, .. } => Some(accessslist),
             MockTransaction::Eip2930 { accesslist, .. } => Some(accesslist),
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => None,
         }
     }
 
@@ -500,6 +621,8 @@ impl PoolTransaction for MockTransaction {
                 Some(*max_priority_fee_per_gas)
             }
             MockTransaction::Eip2930 { .. } => None,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => None,
         }
     }
 
@@ -531,6 +654,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { max_priority_fee_per_gas, .. } => *max_priority_fee_per_gas,
             MockTransaction::Eip4844 { max_priority_fee_per_gas, .. } => *max_priority_fee_per_gas,
             MockTransaction::Eip2930 { gas_price, .. } => *gas_price,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => 0u128,
         }
     }
 
@@ -540,6 +665,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { to, .. } => to,
             MockTransaction::Eip4844 { to, .. } => to,
             MockTransaction::Eip2930 { to, .. } => to,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(TxDeposit { to, .. }) => to,
         }
     }
 
@@ -549,6 +676,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { input, .. } => input,
             MockTransaction::Eip4844 { input, .. } => input,
             MockTransaction::Eip2930 { input, .. } => input,
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit { .. } => &[],
         }
     }
 
@@ -562,6 +691,8 @@ impl PoolTransaction for MockTransaction {
             MockTransaction::Eip1559 { .. } => TxType::EIP1559.into(),
             MockTransaction::Eip4844 { .. } => TxType::EIP4844.into(),
             MockTransaction::Eip2930 { .. } => TxType::EIP2930.into(),
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(_) => DEPOSIT_TX_TYPE_ID,
         }
     }
 
@@ -571,6 +702,11 @@ impl PoolTransaction for MockTransaction {
 
     fn chain_id(&self) -> Option<u64> {
         Some(1)
+    }
+
+    #[cfg(feature = "optimism")]
+    fn is_deposit(&self) -> bool {
+        matches!(self, MockTransaction::Deposit(_))
     }
 }
 
@@ -666,12 +802,32 @@ impl FromRecoveredTransaction for MockTransaction {
                 input,
                 accesslist: access_list,
             },
+            #[cfg(feature = "optimism")]
+            Transaction::Deposit(TxDeposit {
+                source_hash,
+                from,
+                to,
+                mint,
+                value,
+                gas_limit,
+                is_system_transaction,
+                input,
+            }) => MockTransaction::Deposit(TxDeposit {
+                source_hash,
+                from,
+                to,
+                mint,
+                value,
+                gas_limit,
+                is_system_transaction,
+                input,
+            }),
         }
     }
 }
 
 impl FromRecoveredPooledTransaction for MockTransaction {
-    fn from_recovered_transaction(tx: PooledTransactionsElementEcRecovered) -> Self {
+    fn from_recovered_pooled_transaction(tx: PooledTransactionsElementEcRecovered) -> Self {
         FromRecoveredTransaction::from_recovered_transaction(tx.into_ecrecovered_transaction())
     }
 }
@@ -779,6 +935,8 @@ impl From<MockTransaction> for Transaction {
                 access_list: accesslist,
                 input,
             }),
+            #[cfg(feature = "optimism")]
+            MockTransaction::Deposit(tx) => Self::Deposit(tx),
         }
     }
 }
@@ -789,8 +947,8 @@ impl proptest::arbitrary::Arbitrary for MockTransaction {
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         use proptest::prelude::{any, Strategy};
 
-        any::<(Transaction, Address, B256, BlobTransactionSidecar)>()
-            .prop_map(|(tx, sender, tx_hash, sidecar)| match &tx {
+        any::<(Transaction, Address, B256)>()
+            .prop_map(|(tx, sender, tx_hash)| match &tx {
                 Transaction::Legacy(TxLegacy {
                     nonce,
                     gas_price,
@@ -863,8 +1021,11 @@ impl proptest::arbitrary::Arbitrary for MockTransaction {
                     value: (*value).into(),
                     input: (*input).clone(),
                     accesslist: (*access_list).clone(),
-                    sidecar,
+                    // only generate a sidecar if it is a 4844 tx - also for the sake of
+                    // performance just use a default sidecar
+                    sidecar: BlobTransactionSidecar::default(),
                 },
+                _ => unimplemented!(),
             })
             .boxed()
     }
@@ -888,6 +1049,7 @@ impl MockTransactionFactory {
     pub fn validated(&mut self, transaction: MockTransaction) -> MockValidTx {
         self.validated_with_origin(TransactionOrigin::External, transaction)
     }
+
     pub fn validated_arc(&mut self, transaction: MockTransaction) -> Arc<MockValidTx> {
         Arc::new(self.validated(transaction))
     }
@@ -968,6 +1130,43 @@ impl MockTransactionDistribution {
             MockTransaction::legacy()
         };
         tx.with_nonce(nonce).with_gas_limit(self.gas_limit_range.sample(rng))
+    }
+}
+
+/// A set of [MockTransaction]s that can be modified at once
+#[derive(Debug, Clone)]
+pub struct MockTransactionSet {
+    pub(crate) transactions: Vec<MockTransaction>,
+}
+
+impl MockTransactionSet {
+    /// Create a new [MockTransactionSet] from a list of transactions
+    fn new(transactions: Vec<MockTransaction>) -> Self {
+        Self { transactions }
+    }
+
+    /// Create a list of dependent transactions with a common sender. The transactions start at the
+    /// given nonce, and the sender is incremented by the given tx_count.
+    pub fn dependent(sender: Address, from_nonce: u64, tx_count: usize, tx_type: TxType) -> Self {
+        let mut txs = Vec::with_capacity(tx_count);
+        let mut curr_tx = MockTransaction::new_from_type(tx_type).with_nonce(from_nonce);
+        for i in 0..tx_count {
+            let nonce = from_nonce + i as u64;
+            curr_tx = curr_tx.next().with_sender(sender);
+            txs.push(curr_tx.clone());
+        }
+
+        MockTransactionSet::new(txs)
+    }
+
+    /// Add transactions to the [MockTransactionSet]
+    pub fn extend<T: IntoIterator<Item = MockTransaction>>(&mut self, txs: T) {
+        self.transactions.extend(txs);
+    }
+
+    /// Extract the inner [Vec] of [MockTransaction]s
+    pub fn into_vec(self) -> Vec<MockTransaction> {
+        self.transactions
     }
 }
 
